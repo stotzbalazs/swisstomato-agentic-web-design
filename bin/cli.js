@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,6 +54,35 @@ function parseArgs(argv) {
   return options;
 }
 
+// List every file under a directory, as paths relative to that directory.
+function listFiles(dir, base = dir) {
+  const files = [];
+
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+
+    if (entry.isDirectory()) {
+      files.push(...listFiles(full, base));
+    } else if (entry.isFile()) {
+      files.push(relative(base, full));
+    }
+  }
+
+  return files;
+}
+
+// Recursive copy built on copyFileSync instead of fs.cpSync, which has
+// silently skipped directories on Windows paths with non-ASCII characters.
+function copyDir(source, dest) {
+  mkdirSync(dest, { recursive: true });
+
+  for (const file of listFiles(source)) {
+    const to = join(dest, file);
+    mkdirSync(dirname(to), { recursive: true });
+    copyFileSync(join(source, file), to);
+  }
+}
+
 function listConflicts(target) {
   const conflicts = [];
 
@@ -70,45 +105,54 @@ function copyPackageFiles(target, force) {
   mkdirSync(target, { recursive: true });
 
   for (const file of FILES) {
-    const source = join(packageRoot, file);
     const dest = join(target, file);
 
     if (existsSync(dest) && !force) {
       continue;
     }
 
-    cpSync(source, dest);
+    copyFileSync(join(packageRoot, file), dest);
   }
 
   for (const dir of DIRS) {
-    const source = join(packageRoot, dir);
     const dest = join(target, dir);
 
     if (existsSync(dest) && !force) {
       continue;
     }
 
-    cpSync(source, dest, { recursive: true });
+    copyDir(join(packageRoot, dir), dest);
   }
 }
 
-function countAgentDocs() {
-  const docsDir = join(packageRoot, "agent-docs");
-  let count = 0;
+// Confirm every shipped file actually exists in the target.
+function verifyInstall(target) {
+  const missing = [];
 
-  for (const entry of readdirSync(docsDir, { withFileTypes: true })) {
-    if (entry.isFile() && entry.name.endsWith(".md")) {
-      count += 1;
-    } else if (entry.isDirectory()) {
-      for (const nested of readdirSync(join(docsDir, entry.name))) {
-        if (nested.endsWith(".md")) {
-          count += 1;
-        }
+  for (const file of FILES) {
+    if (!existsSync(join(target, file))) {
+      missing.push(file);
+    }
+  }
+
+  for (const dir of DIRS) {
+    for (const file of listFiles(join(packageRoot, dir))) {
+      const dest = join(target, dir, file);
+      if (!existsSync(dest) || !statSync(dest).isFile()) {
+        missing.push(join(dir, file));
       }
     }
   }
 
-  return count;
+  return missing;
+}
+
+function countInstalledDocs(target) {
+  const docsDir = join(target, "agent-docs");
+  if (!existsSync(docsDir)) {
+    return 0;
+  }
+  return listFiles(docsDir).filter((file) => file.endsWith(".md")).length;
 }
 
 function main() {
@@ -140,13 +184,26 @@ function main() {
   const briefDest = join(discoveryDir, "brief.md");
   const briefExisted = existsSync(briefDest);
   if (!briefExisted) {
-    cpSync(join(packageRoot, "templates", "discovery-brief.md"), briefDest);
+    copyFileSync(join(packageRoot, "templates", "discovery-brief.md"), briefDest);
   }
 
-  const docCount = countAgentDocs();
+  const missing = verifyInstall(target);
+  if (!existsSync(briefDest)) {
+    missing.push(join("discovery", "brief.md"));
+  }
+
+  if (missing.length > 0) {
+    console.error(`Installation incomplete in ${target}`);
+    console.error("These files could not be written:");
+    for (const file of missing) {
+      console.error(`  ${file}`);
+    }
+    process.exit(1);
+  }
+
   console.log(`Installed Swisstomato Agentic Web Design to ${target}`);
   console.log(`  AGENTS.md`);
-  console.log(`  agent-docs/ (${docCount} reference docs)`);
+  console.log(`  agent-docs/ (${countInstalledDocs(target)} reference docs)`);
   console.log(`  discovery/brief.md ${briefExisted ? "(kept)" : "(created)"}`);
   console.log("\nYour AI coding tool will pick up AGENTS.md automatically.");
   console.log("Next step: open your AI coding tool and say  start discovery");
