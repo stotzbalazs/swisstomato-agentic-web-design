@@ -1,6 +1,6 @@
 {
   "name": "swisstomato-agentic-web-design",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent documentation for Swisstomato WordPress web projects — install AGENTS.md and reference docs into any project",
   "type": "module",
   "bin": {
